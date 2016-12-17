@@ -1,0 +1,246 @@
+<!doctype html>
+<html>
+<head>
+	<meta name='viewport' content="width=device-width, initial-scale=1">
+	<title>Room lights</title>
+	<link 
+		href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css"
+		rel="stylesheet"
+		type="text/css">
+	<link 
+		href="http://seiyria.com/bootstrap-slider/css/bootstrap-slider.css"
+		rel="stylesheet"
+		type="text/css">
+	<style type='text/css'>
+		#intensitySlider {
+			width: 100%;
+		}
+		#periodMSSlider {
+			width: 100%;
+		}
+		#intensitySlider .slider-selection	{
+				background: #BABABA;
+		}
+		#periodMSSlider .slider-selection {
+				background: #BABABA;
+		}
+	</style>
+</head>
+<body>
+	<div class="container">
+		<div class="row">
+			<div class="col-lg-6 col-lg-offset-3">
+				<div class="jumbotron">
+					<h1>Room lights</h1>
+					<p class="lead">Christmas lights control panel</p>
+			</div>
+		</div>
+    </div>
+	<div class="row">
+		<div class="col-lg-4 col-lg-offset-4">
+			<form>
+			<div class="form-group">
+				<label for="animation">Animation</label>
+				<select class="form-control" id="animation">
+					<option value="static">Static</option>
+					<option value="fade">Fade</option>
+					<option value="blink">Blink</option>
+				</select>
+			</div>
+			<label for="calculation">Calculation mode</label>
+			<div class="form-group">
+				<label class="radio-inline"><input type="radio" name="calculation" value="exp" checked>
+					Exponential
+				</label>
+				<label class="radio-inline"><input type="radio" name="calculation" value="lin">	
+					Linear
+				</label>
+			</div>
+			<div class="form-group">
+				<label for="intensity">Intensity (%)</label>
+				<input class="form-control" 
+				   id="intensity" 
+				   type="text"
+				   data-slider-id='intensitySlider' 
+				   data-slider-min="0" 
+				   data-slider-max="100" 
+				   data-slider-step="1" 
+				   data-slider-value="50"/>
+			</div>
+			<div class="form-group">
+				<label for="periodMS">Animation time (milliseconds)</label>
+				<input class="form-control" 
+				   id="periodMS" 
+				   type="text" 
+				   data-slider-id='periodMSSlider' 
+				   data-slider-min="100" 
+				   data-slider-max="100000" 
+				   data-slider-step="1" 
+				   data-slider-value="1000"/>
+			</div>
+			<div class="checkbox">
+				<label>
+				<input type="checkbox" id="auto" checked>
+					Auto update
+				</label>
+			</div>
+			<button class="btn btn-lg btn-primary" type="button" id="update">Update lights</button>
+			<button class="btn btn-lg btn-primary" type="button" id="sleep">Go to sleep</button>
+		</form>
+	  </div>
+	</div>	
+  </div>
+</body>
+
+<script
+	src="https://code.jquery.com/jquery-3.1.1.min.js"></script>
+<script 
+	src="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/js/bootstrap.min.js"></script>
+<script
+	src="http://seiyria.com/bootstrap-slider/js/bootstrap-slider.js"></script>
+<script>
+
+	$( document ).ready( function() {
+	// Only executes when the dependecies are loaded
+	
+		function sendCommand( sleep = false ) {
+			// Sending the data to the ESP8266 board
+			// Each time data has to be sent, the program estableshes a new connection
+			// sends the information, and closes the connection.
+			// Inefficient, especially when de slider trigger is se to 'change', but this way multiple 
+			// users are allowed.
+			
+			// Basically turns off the output. 
+			if ( sleep ) 
+			{
+				var command_val = '[0, 0]';
+			}
+			// If it isn't a list, it means a static value has to be sent
+			else if ( typeof( intensity.slider( 'getValue' ) ) == 'number' ) 
+			{
+				var command_val = '[0, ' + $( '#intensity' ).val() + ']';
+			}
+			// Else it's not static and not sleeping
+			else 
+			{
+				var command_val = '[' + $( '#intensity' ).val() + ']';
+			};
+			
+			// BoardURL here is not changeable from the GUI, it's set on the router
+			var boardURL = 'ws://192.168.1.103:8266';
+			// Password can be asked from the user, but since only I use it, this way it's
+			// easier to use it. 
+			var password = 'asdf';
+			
+			// Websocket part starts here 
+			ws = new WebSocket( boardURL ); // opening websocket towards the board
+			ws.onopen = function() {
+				ws.send( password + '\r\n' ); // send the password first, set on the ESP8266
+				ws.send( '\x03' ); // control + C command, breaking any loop that may be running
+				
+				// send all the values in a form of -- animation( calculation, [intensity], periodMS )\r\n --
+				ws.send( $( '#animation' ).val() 
+							+ '(' 
+							+ $( "input[name='calculation']:checked"  ).val() 
+							+ ', '
+							+ command_val
+							+ ', '
+							+ $( '#periodMS' ).val()
+							+ ')\r\n' ); 
+				ws.close(); // closing the socket
+			};
+		};
+		
+		// Slider initialization code
+		var intensity = $( '#intensity' ).slider();
+		
+		// animation period is logarithmic. I wanted to have higher resolution at lower speeds 
+		var periodMS = $( '#periodMS' ).slider( { min: 100, max: 100000, scale: 'logarithmic', step: 1 } );
+		
+		var auto = $( '#auto' ).prop( 'checked' ); // auto update variable
+		var connected = false; // This makes sure we don't try to connect when a connection is already active
+		
+		var intensity_state = 0; // Saves the last intensity state
+		
+		$( '#auto' ).on( 'change', function()  {
+			// Auto uptade checkbox trigger 
+			auto = $( '#auto' ).prop( 'checked' );
+		});
+		
+		$( '#animation' ).on( 'change', function() {
+			// Animation selection trigger 
+			// Static animation = single value
+			// Other animation = 2 values (MIN, MAX)
+			
+			// Save the current state of the slider in case it's static
+			// Save the MAX if it is not static
+			var val = intensity.slider( 'getValue' );
+			if ( typeof( val ) == 'number' ) 
+			{
+				intensity_state = val;
+			}
+			else 
+			{
+				intensity_state = val[1];
+			};
+		  
+			// To achieve sliders with 1 or 2 variables, the slider has to be destroyed
+			// and initialized on change.
+			if ( $( '#animation' ).val() == 'static' ) 
+			{
+				intensity.slider( 'destroy' );
+				intensity
+					.slider()
+					.slider( 'setAttribute', 'value', intensity_state )
+					.slider( 'refresh' )
+					.slider( 'setValue', intensity_state );
+			}
+			// In case we switch from static to any other the MAX value becomes the static
+			// value. MIN value will be se static's value -25. If we change between 2 non-static
+			// animation types, that needs 2 variable slider, no change is needed.
+			else if ( typeof( val ) == 'number' ) 
+			{
+				intensity.slider( 'destroy' );
+				intensity
+					.slider()
+					.slider( 'setAttribute', 'value', [intensity_state-25, intensity_state] )
+					.slider( 'refresh' )
+					.slider( 'setValue', [intensity_state-25, intensity_state] );
+			}
+			
+			// Destroying the slider delete's the trigger too, so it has to be created again
+			intensity.on( 'change', function() {
+				if ( auto && !connected ) sendCommand();
+			});
+			
+			// And finally send the command 
+			if ( auto && !connected ) sendCommand();
+		});
+		
+		$( document ).on( 'change', 'input:radio[name="calculation"]', function()  {
+			// Intensity calculation trigger 
+			if ( auto && !connected ) sendCommand();
+		});
+		
+		intensity.on( 'slideStop', function() {
+			// Intensity slider trigger 
+			if ( auto && !connected ) sendCommand();
+		});
+		
+		$( '#periodMS' ).on( 'slideStop', function() {
+			// Animation period trigger 
+			if ( auto && !connected ) sendCommand();
+		});
+		
+		$( '#update' ).click( function() {
+			// Update button trigger
+			sendCommand();
+		});
+		
+		$( '#sleep' ).click( function() {
+			// Sleep button trigger
+			sendCommand( true );
+		});
+	});
+</script>
+</html>
